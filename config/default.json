@@ -1,7 +1,8 @@
 {
-  "vnp_TmnCode":"2XJY7XBB",
-  "vnp_HashSecret":"DEL9W7I686VI7OMR2POOCXZZF9HRFF6N",
-  "vnp_Url":"https://sandbox.vnpayment.vn/paymentv2/vpcpay.html",
-  "vnp_Api":"https://sandbox.vnpayment.vn/merchant_webapi/api/transaction",
-  "vnp_ReturnUrl": "https://www.eraestate.me/payment/vnpay-return"
+  "vnp_TmnCode": "8UA3LCZI",
+  "vnp_HashSecret": "I316IEPY5WEGPGRC3WJC9TPQ0XV0GSVL",
+  "vnp_Url": "https://sandbox.vnpayment.vn/paymentv2/vpcpay.html",
+  "vnp_Api": "https://sandbox.vnpayment.vn/merchant_webapi/api/transaction",
+  "vnp_ReturnUrl": "https://www.eraestate.me/payment/vnpay-return",
+  "vnp_CoinIpnUrl": "http://localhost:8888/order/vnpay_coin_ipn"
 }

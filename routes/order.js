@@ -1,15 +1,23 @@
 /**
- * Created by CTT VNPAY
+ * VNPAY Payment Routes — Enhanced for Coin Purchase & BĐS transactions
+ * 
+ * Flow:
+ * 1. FrontEnd calls MessageService → /billing/payment/create → gets orderCode + amountVnd
+ * 2. FrontEnd calls THIS service → /order/create_coin_payment → gets VNPAY paymentUrl
+ * 3. User pays on VNPAY
+ * 4. VNPAY calls IPN → THIS service → /order/vnpay_coin_ipn → calls MessageService /billing/payment/vnpay-callback
+ * 5. VNPAY redirects user → FrontEnd /wallet/vnpay-return?...
  */
-
-
 
 let express = require('express');
 let router = express.Router();
 let $ = require('jquery');
 const request = require('request');
 const moment = require('moment');
+const fetch = require('node-fetch');
 
+// ─── MessageService Base URL ───────────────────────────────────────────────
+const MESSAGE_SERVICE_URL = process.env.MESSAGE_SERVICE_URL || 'http://localhost:8082';
 
 router.get('/', function(req, res, next){
     res.render('orderlist', { title: 'Danh sách đơn hàng' })
@@ -143,6 +151,227 @@ router.post('/create_payment_for_transaction', function (req, res, next) {
     let paymentUrl = vnpUrlBase + '?' + querystring.stringify(vnp_Params, { encode: false });
     res.json({ paymentUrl: paymentUrl });
 });
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ═══ COIN PURCHASE — VNPAY integration for Social Network coin top-up ═══════
+// ══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Create VNPAY payment URL for coin purchase.
+ * 
+ * Request body:
+ *   - orderCode: unique order code from MessageService (vnp_TxnRef)
+ *   - amount: amount in VND (will be multiplied by 100 for VNPAY)
+ *   - returnUrl: FrontEnd URL for VNPAY to redirect after payment
+ *   - bankCode: (optional) specific bank
+ * 
+ * Returns: { paymentUrl: "https://sandbox.vnpayment.vn/..." }
+ */
+router.post('/create_coin_payment', function (req, res, next) {
+    process.env.TZ = 'Asia/Ho_Chi_Minh';
+    let date = new Date();
+    let createDate = moment(date).format('YYYYMMDDHHmmss');
+    let expireDate = moment(date).add(15, 'minutes').format('YYYYMMDDHHmmss');
+
+    let ipAddr = req.headers['x-forwarded-for'] ||
+        req.connection.remoteAddress ||
+        req.socket.remoteAddress ||
+        (req.connection.socket ? req.connection.socket.remoteAddress : '127.0.0.1');
+        
+    // Clean up IP Address for VNPAY (VNPAY prefers IPv4 and no comma separated values)
+    if (ipAddr && ipAddr.indexOf(',') !== -1) {
+        ipAddr = ipAddr.split(',')[0];
+    }
+    if (ipAddr === '::1' || ipAddr === '::ffff:127.0.0.1') {
+        ipAddr = '127.0.0.1';
+    }
+
+    let config = require('config');
+    let tmnCode = config.get('vnp_TmnCode');
+    let secretKey = config.get('vnp_HashSecret');
+    let vnpUrlBase = config.get('vnp_Url');
+
+    let orderCode = req.body.orderCode;
+    let amount = req.body.amount;
+    let returnUrl = req.body.returnUrl;
+    let bankCode = req.body.bankCode || '';
+
+    if (!orderCode || amount == null || !returnUrl) {
+        return res.status(400).json({
+            error: 'orderCode, amount, and returnUrl are required'
+        });
+    }
+
+    // Validate amount
+    let amountNum = Math.round(Number(amount));
+    if (isNaN(amountNum) || amountNum <= 0) {
+        return res.status(400).json({ error: 'Invalid amount' });
+    }
+
+    let vnp_Params = {};
+    vnp_Params['vnp_Version'] = '2.1.0';
+    vnp_Params['vnp_Command'] = 'pay';
+    vnp_Params['vnp_TmnCode'] = tmnCode;
+    vnp_Params['vnp_Locale'] = 'vn';
+    vnp_Params['vnp_CurrCode'] = 'VND';
+    vnp_Params['vnp_TxnRef'] = String(orderCode);
+    vnp_Params['vnp_OrderInfo'] = 'NapXuTTVV_' + orderCode;
+    vnp_Params['vnp_OrderType'] = 'other';
+    vnp_Params['vnp_Amount'] = amountNum * 100;
+    vnp_Params['vnp_ReturnUrl'] = returnUrl;
+    vnp_Params['vnp_IpAddr'] = ipAddr || '127.0.0.1';
+    vnp_Params['vnp_CreateDate'] = createDate;
+    vnp_Params['vnp_ExpireDate'] = expireDate;
+
+    if (bankCode) {
+        vnp_Params['vnp_BankCode'] = bankCode;
+    }
+
+    vnp_Params = sortObject(vnp_Params);
+
+    let querystring = require('qs');
+    let signData = querystring.stringify(vnp_Params, { encode: false });
+    let crypto = require("crypto");
+    let hmac = crypto.createHmac("sha512", secretKey);
+    let signed = hmac.update(new Buffer(signData, 'utf-8')).digest("hex");
+    vnp_Params['vnp_SecureHash'] = signed;
+
+    let paymentUrl = vnpUrlBase + '?' + querystring.stringify(vnp_Params, { encode: false });
+
+    console.log(`[COIN] Created VNPAY URL for orderCode=${orderCode}, amount=${amountNum} VND`);
+    res.json({ paymentUrl: paymentUrl });
+});
+
+/**
+ * VNPAY IPN callback for coin purchases.
+ * VNPAY calls this endpoint to confirm payment result.
+ * We verify the signature, then notify MessageService to credit coins.
+ */
+router.get('/vnpay_coin_ipn', async function (req, res, next) {
+    let vnp_Params = req.query;
+    let secureHash = vnp_Params['vnp_SecureHash'];
+
+    let orderCode = vnp_Params['vnp_TxnRef'];
+    let rspCode = vnp_Params['vnp_ResponseCode'];
+
+    delete vnp_Params['vnp_SecureHash'];
+    delete vnp_Params['vnp_SecureHashType'];
+
+    vnp_Params = sortObject(vnp_Params);
+    let config = require('config');
+    let secretKey = config.get('vnp_HashSecret');
+    let querystring = require('qs');
+    let signData = querystring.stringify(vnp_Params, { encode: false });
+    let crypto = require("crypto");
+    let hmac = crypto.createHmac("sha512", secretKey);
+    let signed = hmac.update(new Buffer(signData, 'utf-8')).digest("hex");
+
+    if (secureHash !== signed) {
+        console.log(`[COIN IPN] ❌ Checksum failed for orderCode=${orderCode}`);
+        return res.status(200).json({ RspCode: '97', Message: 'Checksum failed' });
+    }
+
+    console.log(`[COIN IPN] ✅ Valid signature for orderCode=${orderCode}, responseCode=${rspCode}`);
+
+    // Notify MessageService to process the payment
+    try {
+        const callbackData = {
+            orderCode: orderCode,
+            vnpResponseCode: rspCode,
+            vnpTransactionNo: vnp_Params['vnp_TransactionNo'] || '',
+            vnpBankCode: vnp_Params['vnp_BankCode'] || '',
+            vnpCardType: vnp_Params['vnp_CardType'] || '',
+            vnpPayDate: vnp_Params['vnp_PayDate'] || '',
+        };
+
+        const MESSAGE_SERVICE_URL = process.env.MESSAGE_SERVICE_URL || 'http://localhost:8082';
+        const response = await fetch(`${MESSAGE_SERVICE_URL}/billing/payment/vnpay-callback`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(callbackData),
+        });
+
+        if (response.ok) {
+            console.log(`[COIN IPN] ✅ MessageService callback success for orderCode=${orderCode}`);
+            res.status(200).json({ RspCode: '00', Message: 'Success' });
+        } else {
+            const errText = await response.text();
+            console.log(`[COIN IPN] ⚠️ MessageService callback failed: ${errText}`);
+            res.status(200).json({ RspCode: '00', Message: 'Success' }); // Still respond OK to VNPAY
+        }
+    } catch (error) {
+        console.error(`[COIN IPN] ❌ Failed to call MessageService:`, error.message);
+        res.status(200).json({ RspCode: '99', Message: 'Internal error' });
+    }
+});
+
+/**
+ * VNPAY return URL handler for coin purchases.
+ * Verifies the signature and returns payment result as JSON.
+ * Frontend calls this to verify payment on return.
+ */
+router.get('/vnpay_coin_return', async function (req, res, next) {
+    let vnp_Params = req.query;
+    let secureHash = vnp_Params['vnp_SecureHash'];
+
+    delete vnp_Params['vnp_SecureHash'];
+    delete vnp_Params['vnp_SecureHashType'];
+
+    vnp_Params = sortObject(vnp_Params);
+
+    let config = require('config');
+    let secretKey = config.get('vnp_HashSecret');
+    let querystring = require('qs');
+    let signData = querystring.stringify(vnp_Params, { encode: false });
+    let crypto = require("crypto");
+    let hmac = crypto.createHmac("sha512", secretKey);
+    let signed = hmac.update(new Buffer(signData, 'utf-8')).digest("hex");
+
+    let result = {
+        orderCode: vnp_Params['vnp_TxnRef'],
+        responseCode: vnp_Params['vnp_ResponseCode'],
+        transactionNo: vnp_Params['vnp_TransactionNo'] || '',
+        bankCode: vnp_Params['vnp_BankCode'] || '',
+        amount: vnp_Params['vnp_Amount'] ? parseInt(vnp_Params['vnp_Amount']) / 100 : 0,
+        payDate: vnp_Params['vnp_PayDate'] || '',
+        isValid: secureHash === signed,
+        isSuccess: secureHash === signed && vnp_Params['vnp_ResponseCode'] === '00',
+    };
+
+    // Also notify MessageService (in case IPN hasn't arrived yet)
+    if (result.isValid) {
+        try {
+            const callbackData = {
+                orderCode: result.orderCode,
+                vnpResponseCode: vnp_Params['vnp_ResponseCode'],
+                vnpTransactionNo: result.transactionNo,
+                vnpBankCode: result.bankCode,
+                vnpCardType: vnp_Params['vnp_CardType'] || '',
+                vnpPayDate: result.payDate,
+            };
+
+            const MESSAGE_SERVICE_URL = process.env.MESSAGE_SERVICE_URL || 'http://localhost:8082';
+            const response = await fetch(`${MESSAGE_SERVICE_URL}/billing/payment/vnpay-callback`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(callbackData),
+            });
+            if (!response.ok) {
+                const errText = await response.text();
+                console.error(`[COIN RETURN] ⚠️ MessageService callback failed with status ${response.status}: ${errText}`);
+            } else {
+                console.log(`[COIN RETURN] ✅ MessageService callback success for orderCode=${result.orderCode}`);
+            }
+        } catch (err) {
+            console.error('[COIN RETURN] Warning: Failed to notify MessageService:', err.message);
+        }
+    }
+
+    res.json(result);
+});
+
+
+// ─── Original VNPAY routes ──────────────────────────────────────────────────
 
 router.get('/vnpay_return', function (req, res, next) {
     let vnp_Params = req.query;
