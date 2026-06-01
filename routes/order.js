@@ -16,6 +16,29 @@ const request = require('request');
 const moment = require('moment');
 const fetch = require('node-fetch');
 
+// ─── Load Environment Variables from .env (Zero-dependency manual loader) ──
+const fs = require('fs');
+const path = require('path');
+try {
+    const envPath = path.join(__dirname, '../.env');
+    if (fs.existsSync(envPath)) {
+        const envContent = fs.readFileSync(envPath, 'utf8');
+        envContent.split(/\r?\n/).forEach(line => {
+            const trimmed = line.trim();
+            if (trimmed && !trimmed.startsWith('#') && trimmed.includes('=')) {
+                const index = trimmed.indexOf('=');
+                const key = trimmed.substring(0, index).trim();
+                const val = trimmed.substring(index + 1).trim().replace(/^['"]|['"]$/g, '');
+                if (key) {
+                    process.env[key] = val;
+                }
+            }
+        });
+    }
+} catch (err) {
+    console.warn('[VNPAY] Warning: Failed to load .env manually:', err.message);
+}
+
 // ─── MediaService Base URL (BillingController lives in MediaService:8084) ───
 const MEDIA_SERVICE_URL = process.env.MEDIA_SERVICE_URL || 'http://localhost:8084';
 
