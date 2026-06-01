@@ -16,8 +16,8 @@ const request = require('request');
 const moment = require('moment');
 const fetch = require('node-fetch');
 
-// ─── MessageService Base URL ───────────────────────────────────────────────
-const MESSAGE_SERVICE_URL = process.env.MESSAGE_SERVICE_URL || 'http://localhost:8082';
+// ─── MediaService Base URL (BillingController lives in MediaService:8084) ───
+const MEDIA_SERVICE_URL = process.env.MEDIA_SERVICE_URL || 'http://localhost:8084';
 
 router.get('/', function(req, res, next){
     res.render('orderlist', { title: 'Danh sách đơn hàng' })
@@ -284,8 +284,7 @@ router.get('/vnpay_coin_ipn', async function (req, res, next) {
             vnpPayDate: vnp_Params['vnp_PayDate'] || '',
         };
 
-        const MESSAGE_SERVICE_URL = process.env.MESSAGE_SERVICE_URL || 'http://localhost:8082';
-        const response = await fetch(`${MESSAGE_SERVICE_URL}/billing/payment/vnpay-callback`, {
+        const response = await fetch(`${MEDIA_SERVICE_URL}/billing/payment/vnpay-callback`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(callbackData),
@@ -350,8 +349,7 @@ router.get('/vnpay_coin_return', async function (req, res, next) {
                 vnpPayDate: result.payDate,
             };
 
-            const MESSAGE_SERVICE_URL = process.env.MESSAGE_SERVICE_URL || 'http://localhost:8082';
-            const response = await fetch(`${MESSAGE_SERVICE_URL}/billing/payment/vnpay-callback`, {
+            const response = await fetch(`${MEDIA_SERVICE_URL}/billing/payment/vnpay-callback`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(callbackData),
