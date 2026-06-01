@@ -40,7 +40,7 @@ try {
 }
 
 // ─── MediaService Base URL (BillingController lives in MediaService:8084) ───
-const MEDIA_SERVICE_URL = process.env.MEDIA_SERVICE_URL || 'http://localhost:8084';
+const MEDIA_SERVICE_URL = process.env.MEDIA_SERVICE_URL || 'https://api.websitedev.software/api/message';
 
 router.get('/', function(req, res, next){
     res.render('orderlist', { title: 'Danh sách đơn hàng' })
